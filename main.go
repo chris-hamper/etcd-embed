@@ -5,15 +5,17 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
 	"go.etcd.io/etcd/server/v3/embed"
-	"go.etcd.io/etcd/server/v3/lease"
-	"go.etcd.io/etcd/server/v3/storage/mvcc"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3client"
 )
 
 // Command line parameters
@@ -77,9 +79,11 @@ func main() {
 
 	e, err := embed.StartEtcd(cfg)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalln("Failed to start etcd:", err)
 	}
 	defer e.Close()
+
+	// zap := e.GetLogger()
 
 	select {
 	case <-e.Server.ReadyNotify():
@@ -89,23 +93,65 @@ func main() {
 		log.Printf("Server took too long to start!")
 	}
 
-	log.Println("Put key")
-	e.Server.KV().Put([]byte("key"), []byte("value"), lease.LeaseID(0))
+	ctx := context.Background()
+	c := v3client.New(e.Server)
 
-	result, err := e.Server.KV().Range(context.TODO(), []byte("key"), nil, mvcc.RangeOptions{Limit: 1})
-	if err != nil {
-		log.Println("Failed to read key:", err)
-	} else {
-		log.Println("Read key:", string(result.KVs[0].Value))
+	if nodeID == "node0" {
+		time.Sleep(3*time.Second)
+		log.Println("Putting keys...")
+
+		wg := &sync.WaitGroup{}
+		mut := &sync.Mutex{}
+		var elapsed time.Duration
+
+		// Spawn 100 workers that each Put 1000 random keys
+		start := time.Now()
+		for range 100 {
+			wg.Go(func() {
+				for range 1000 {
+					key := strconv.FormatInt(int64(rand.IntN(1000)), 10)
+					value := strconv.FormatInt(int64(rand.IntN(1000000)), 10)
+
+					start := time.Now()
+					c.KV.Put(ctx, key, value)
+					end := time.Now()
+
+					mut.Lock()
+					elapsed += end.Sub(start)
+					mut.Unlock()
+				}
+			})
+		}
+
+		wg.Wait()
+		log.Println("Done putting keys. Wall clock elapsed:", time.Since(start), "\nAvg Put:", elapsed / 100000)
 	}
+
+	tick := time.NewTicker(time.Second)
 
 	// Block the main goroutine until a signal is received on the 'signals' channel, or the server fails
-	select {
-	case sig := <-signals:
-		log.Printf("\nReceived signal: %s. Exiting gracefully.\n", sig)
-	case err := <-e.Err():
-		log.Printf("\nServer failed: %s\n", err)
+	var done bool
+	for !done {
+		select {
+		case sig := <-signals:
+			log.Printf("\nReceived signal: %s. Exiting gracefully.\n", sig)
+			done = true
+
+		case err := <-e.Err():
+			log.Printf("\nServer failed: %s\n", err)
+			done = true
+		case <-tick.C:
+			resp, err := c.KV.Get(ctx, "0")
+			if err != nil {
+				log.Println("Failed to read key:", err)
+			} else if resp.Count > 0 {
+				log.Printf("[0] = %s\n    Response: %+v", string(resp.Kvs[0].Value), resp)
+			} else {
+				log.Println("No value for [0]")
+			}
+		}
 	}
+	tick.Stop()
 
 	e.Server.Stop()
 }
