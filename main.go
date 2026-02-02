@@ -96,8 +96,10 @@ func main() {
 	ctx := context.Background()
 	c := v3client.New(e.Server)
 
+	time.Sleep(3*time.Second)
+	log.Println("Leader:", e.Server.Leader().String())
+
 	if nodeID == "node0" {
-		time.Sleep(3*time.Second)
 		log.Println("Putting keys...")
 
 		wg := &sync.WaitGroup{}
@@ -140,15 +142,15 @@ func main() {
 		case err := <-e.Err():
 			log.Printf("\nServer failed: %s\n", err)
 			done = true
-		case <-tick.C:
-			resp, err := c.KV.Get(ctx, "0")
-			if err != nil {
-				log.Println("Failed to read key:", err)
-			} else if resp.Count > 0 {
-				log.Printf("[0] = %s\n    Response: %+v", string(resp.Kvs[0].Value), resp)
-			} else {
-				log.Println("No value for [0]")
-			}
+		// case <-tick.C:
+		// 	resp, err := c.KV.Get(ctx, "0")
+		// 	if err != nil {
+		// 		log.Println("Failed to read key:", err)
+		// 	} else if resp.Count > 0 {
+		// 		log.Printf("[0] = %s\n    Response: %+v", string(resp.Kvs[0].Value), resp)
+		// 	} else {
+		// 		log.Println("No value for [0]")
+		// 	}
 		}
 	}
 	tick.Stop()
